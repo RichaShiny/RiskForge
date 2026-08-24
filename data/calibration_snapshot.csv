@@ -1,0 +1,13 @@
+parameter,asset,asset_2,value
+annualized_volatility,ETH,,0.6913677664263321
+annualized_volatility,BTC,,0.5097815930531142
+annualized_volatility,SOL,,0.9426708052652013
+correlation,ETH,ETH,1.0
+correlation,ETH,BTC,0.8473246920571158
+correlation,ETH,SOL,0.7546674613822845
+correlation,BTC,ETH,0.8473246920571158
+correlation,BTC,BTC,1.0
+correlation,BTC,SOL,0.7527479726683667
+correlation,SOL,ETH,0.7546674613822845
+correlation,SOL,BTC,0.7527479726683667
+correlation,SOL,SOL,1.0
