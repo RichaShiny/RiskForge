@@ -1,6 +1,6 @@
 # RiskForge
 
-A quantitative protocol risk and stress-testing engine for simulating market shocks, estimating liquidation exposure, modeling liquidation cascades, and analyzing systemic risk under uncertainty.
+A quantitative protocol risk and stress-testing engine for simulating market shocks, estimating liquidation exposure, modeling liquidation cascades, attributing tail risk, and analyzing systemic risk under uncertainty.
 
 ## Why I Built This
 
@@ -10,7 +10,7 @@ That led to a broader question:
 
 > How can we move from evaluating individual lending positions to measuring protocol-level risk under deterministic and stochastic market stress?
 
-RiskForge explores that question through position-level risk modeling, deterministic stress testing, asset-specific scenarios, endogenous liquidation-cascade simulation, cascade-aware Monte Carlo analysis, reverse stress testing, historical market calibration, tail-risk evaluation, and parameter sensitivity.
+RiskForge explores that question through position-level risk modeling, deterministic stress testing, asset-specific scenarios, endogenous liquidation-cascade simulation, cascade-aware Monte Carlo analysis, reverse stress testing, paired tail-risk attribution, historical market calibration, tail-risk evaluation, and parameter sensitivity.
 
 ## Questions I Wanted to Answer
 
@@ -32,13 +32,15 @@ Rather than starting with a dashboard, I built the project around a sequence of 
 
 8. Across the same simulated market draws, how much does endogenous liquidation feedback amplify exposure and bad debt relative to first-order stress alone?
 
-9. How often do severe outcomes occur in the tail of that distribution?
+9. Which collateral assets contribute most to the worst cascade outcomes, and do their marginal effects become larger in the tail?
 
-10. Instead of choosing a crash first, what is the smallest modeled market decline that causes a chosen protocol-risk threshold to fail?
+10. How often do severe outcomes occur in the tail of that distribution?
 
-11. How sensitive are those results to assumptions about liquidation thresholds and market depth?
+11. Instead of choosing a crash first, what is the smallest modeled market decline that causes a chosen protocol-risk threshold to fail?
 
-12. How much do simulation results change when volatility and cross-asset correlations are calibrated from historical market data rather than assumed?
+12. How sensitive are those results to assumptions about liquidation thresholds and market depth?
+
+13. How much do simulation results change when volatility and cross-asset correlations are calibrated from historical market data rather than assumed?
 
 These questions drove the architecture of RiskForge.
 
@@ -65,6 +67,8 @@ Correlated Monte Carlo Market Draws
 Paired First-Order vs Cascade-Aware Evaluation
 ↓
 Tail Amplification + Bad-Debt Distribution
+↓
+Paired Leave-One-Asset-Out Tail Attribution
 ↓
 Reverse Stress Threshold Solver
 ↓
@@ -204,7 +208,31 @@ The solver also builds a reverse-stress frontier across multiple risk thresholds
 
 Reverse-stress thresholds are model-based breakpoints, not forecasts of future market moves or recommendations for protocol parameters.
 
-### 7. Historical Calibration
+### 7. Tail-Risk Attribution
+
+Portfolio-level tail metrics show how severe the worst simulated outcomes become, but they do not explain which collateral asset is driving those outcomes.
+
+RiskForge therefore includes a paired leave-one-asset-out attribution layer. For each simulated ETH/BTC/SOL market draw:
+
+1. the full scenario is evaluated through the cascade engine,
+2. the exact same scenario is re-run with one asset's exogenous return set to zero,
+3. all other shocks, protocol positions, market-depth assumptions, and liquidation mechanics remain unchanged, and
+4. the difference between the full and muted scenarios is recorded as that asset's marginal counterfactual contribution.
+
+The attribution tracks marginal effects on:
+
+- cascade-exposed debt share,
+- first-order exposure,
+- cascade amplification,
+- bad-debt share,
+- secondary liquidations, and
+- endogenous price decline.
+
+RiskForge reports both unconditional average contribution and tail-conditioned contribution for the worst cascade-exposure and bad-debt cohorts. This makes it possible for an asset to appear modest on average while still being an important driver of severe outcomes.
+
+These leave-one-asset-out effects are not an additive decomposition. Liquidation cascades are nonlinear and assets interact through correlated shocks and protocol state, so ETH, BTC, and SOL marginal contributions can overlap and are not expected to sum exactly to total risk.
+
+### 8. Historical Calibration
 
 Rather than relying exclusively on assumed market parameters, RiskForge can estimate volatility and cross-asset dependence from historical ETH, BTC, and SOL prices.
 
@@ -221,14 +249,14 @@ Estimated annualized volatility:
 Estimated return correlations:
 
 | | ETH | BTC | SOL |
-| --- | ---: | ---: | ---: |
+| --- | ---: | ---: |
 | ETH | 1.000 | 0.847 | 0.755 |
 | BTC | 0.847 | 1.000 | 0.753 |
 | SOL | 0.755 | 0.753 | 1.000 |
 
 The calibrated correlation matrix was also checked for positive semidefiniteness before being used in simulation.
 
-### 8. Tail-Risk Evaluation
+### 9. Tail-Risk Evaluation
 
 Mean exposure alone can hide severe but less frequent outcomes.
 
@@ -246,7 +274,7 @@ RiskForge therefore evaluates first-order and cascade-aware tails separately, in
 
 This makes it possible to see not only whether a market draw is severe, but whether liquidation feedback makes the severe tail materially worse under the chosen stress assumptions.
 
-### 9. Parameter Sensitivity
+### 10. Parameter Sensitivity
 
 Risk estimates depend on model and protocol assumptions.
 
@@ -295,6 +323,10 @@ The project includes automated tests covering:
 - First-order/cascade threshold parity when endogenous price impact is disabled
 - Reverse-stress market-depth sensitivity
 - Asset-specific stress-weight behavior
+- Tail-risk attribution reproducibility
+- Zero-shock attribution invariance
+- Isolated-asset attribution behavior
+- Tail-cohort contribution aggregation
 
 Pull requests are validated automatically with GitHub Actions.
 
@@ -340,6 +372,15 @@ The **Reverse Stress Test** page solves for critical shocks instead of requiring
 - critical asset-level shock vectors, and
 - a reverse-stress frontier across increasing risk thresholds.
 
+The **Tail Risk Attribution** page explains which collateral assets drive modeled cascade risk by comparing each full simulated scenario with paired counterfactuals that neutralize one asset at a time. It shows:
+
+- average marginal cascade-exposure contribution,
+- tail-conditioned exposure contribution,
+- tail bad-debt contribution,
+- probability of a positive marginal contribution,
+- secondary-liquidation contribution, and
+- scenario-level shock-versus-contribution relationships.
+
 ## Project Structure
 
 ```text
@@ -356,7 +397,8 @@ riskforge/
 ├── pages/
 │   ├── Cascade_Tail_Risk.py
 │   ├── Liquidation_Cascade.py
-│   └── Reverse_Stress_Test.py
+│   ├── Reverse_Stress_Test.py
+│   └── Tail_Risk_Attribution.py
 ├── scripts/
 │   └── save_calibration.py
 ├── src/
@@ -368,7 +410,8 @@ riskforge/
 │   ├── reverse_stress.py
 │   ├── risk_engine.py
 │   ├── simulation.py
-│   └── stress_engine.py
+│   ├── stress_engine.py
+│   └── tail_risk_attribution.py
 └── tests/
     ├── test_calibration.py
     ├── test_cascade_simulation.py
@@ -376,7 +419,8 @@ riskforge/
     ├── test_reverse_stress.py
     ├── test_risk_engine.py
     ├── test_simulation.py
-    └── test_stress_engine.py
+    ├── test_stress_engine.py
+    └── test_tail_risk_attribution.py
 ```
 
 ## Running the Project
