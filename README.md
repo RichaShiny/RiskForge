@@ -10,7 +10,7 @@ That led to a broader question:
 
 > How can we move from evaluating individual lending positions to measuring protocol-level risk under deterministic and stochastic market stress?
 
-RiskForge explores that question through position-level risk modeling, deterministic stress testing, asset-specific scenarios, endogenous liquidation-cascade simulation, Monte Carlo simulation, historical market calibration, tail-risk analysis, and parameter sensitivity.
+RiskForge explores that question through position-level risk modeling, deterministic stress testing, asset-specific scenarios, endogenous liquidation-cascade simulation, cascade-aware Monte Carlo analysis, historical market calibration, tail-risk evaluation, and parameter sensitivity.
 
 ## Questions I Wanted to Answer
 
@@ -30,11 +30,13 @@ Rather than starting with a dashboard, I built the project around a sequence of 
 
 7. Deterministic scenarios tell us what happens under a chosen crash, but what is the distribution of possible outcomes?
 
-8. How often do severe outcomes occur in the tail of that distribution?
+8. Across the same simulated market draws, how much does endogenous liquidation feedback amplify exposure and bad debt relative to first-order stress alone?
 
-9. How sensitive are those results to assumptions about liquidation thresholds?
+9. How often do severe outcomes occur in the tail of that distribution?
 
-10. How much do simulation results change when volatility and cross-asset correlations are calibrated from historical market data rather than assumed?
+10. How sensitive are those results to assumptions about liquidation thresholds and market depth?
+
+11. How much do simulation results change when volatility and cross-asset correlations are calibrated from historical market data rather than assumed?
 
 These questions drove the architecture of RiskForge.
 
@@ -56,13 +58,15 @@ Market-Depth Price Impact
 ↓
 Secondary Liquidations + Bad Debt
 ↓
-Monte Carlo Market Simulation
+Correlated Monte Carlo Market Draws
+↓
+Paired First-Order vs Cascade-Aware Evaluation
+↓
+Tail Amplification + Bad-Debt Distribution
 ↓
 Historical Volatility + Correlation Calibration
 ↓
-Tail-Risk Analysis
-↓
-Liquidation-Threshold Sensitivity
+Parameter Sensitivity
 ↓
 Validation and Automated Tests
 
@@ -145,7 +149,7 @@ This makes it possible to separate:
 
 The cascade module is a stress-testing abstraction, not a prediction of realized exchange execution, MEV behavior, liquidator competition, or protocol-specific transaction ordering.
 
-### 5. Monte Carlo Risk Simulation
+### 5. Cascade-Aware Monte Carlo Risk Simulation
 
 Deterministic scenarios answer "what if this happens?"
 
@@ -153,9 +157,25 @@ Monte Carlo simulation asks:
 
 > What range of outcomes could occur, and how frequently do severe outcomes appear?
 
-RiskForge simulates correlated ETH, BTC, and SOL market returns and maps each simulated market state into protocol liquidation exposure.
+RiskForge simulates correlated ETH, BTC, and SOL market returns using either Normal or Student-t return assumptions.
 
-Both Normal and Student-t return models are available so the effect of heavier-tailed return assumptions can be explored.
+Each simulated market state is evaluated twice using the exact same return draw:
+
+1. **First-order stress:** positions are marked liquidatable immediately after the exogenous ETH/BTC/SOL move.
+2. **Cascade-aware stress:** the same move is passed through the liquidation-cascade engine so liquidation sales can create endogenous price impact, secondary liquidations, and bad debt.
+
+Because the two evaluations are paired on the same market draw, RiskForge can measure modeled cascade amplification directly rather than comparing unrelated random scenarios.
+
+For each simulation it records:
+
+- first-order liquidatable debt share,
+- cascade-exposed debt share,
+- additional debt exposure created by the cascade,
+- relative amplification versus first-order exposure,
+- positions made liquidatable only by feedback,
+- liquidation rounds executed,
+- endogenous price decline, and
+- residual bad debt.
 
 ### 6. Historical Calibration
 
@@ -185,16 +205,19 @@ The calibrated correlation matrix was also checked for positive semidefiniteness
 
 Mean exposure alone can hide severe but less frequent outcomes.
 
-RiskForge therefore evaluates:
+RiskForge therefore evaluates first-order and cascade-aware tails separately, including:
 
 - Median exposure
+- 90th, 95th, and 99th percentile cascade exposure
 - P(Exposure > 25%)
 - P(Exposure > 50%)
 - P(Exposure > 75%)
-- Maximum simulated exposure
-- 50th, 75th, 90th, 95th, and 99th percentile exposure
+- Probability that endogenous feedback increases exposure
+- 95th and 99th percentile tail amplification
+- Mean and 95th/99th percentile bad-debt share
+- Endogenous price-impact tails
 
-This makes the shape and tail of the simulated risk distribution visible.
+This makes it possible to see not only whether a market draw is severe, but whether liquidation feedback makes the severe tail materially worse under the chosen stress assumptions.
 
 ### 8. Parameter Sensitivity
 
@@ -202,7 +225,9 @@ Risk estimates depend on model and protocol assumptions.
 
 RiskForge therefore performs counterfactual liquidation-threshold sensitivity analysis under a fixed market shock.
 
-The liquidation-cascade lab also exposes market depth, close factor, liquidation bonus, price-impact strength, and maximum cascade rounds so the effect of execution assumptions can be inspected directly.
+The liquidation-cascade lab exposes market depth, close factor, liquidation bonus, price-impact strength, and maximum cascade rounds so the effect of execution assumptions can be inspected directly.
+
+The cascade-aware Monte Carlo layer also supports paired market-depth sensitivity. The same simulated market draws are re-evaluated under multiple liquidity-depth multipliers, making it possible to isolate how shallow versus deep markets change cascade amplification and tail risk.
 
 These are sensitivity analyses, not parameter optimization or recommendations for protocol settings.
 
@@ -231,12 +256,13 @@ The project includes automated tests covering:
 - Non-negative debt, collateral, and bad-debt accounting
 - Debt-repayment reconciliation
 - Cascade input validation
+- Cascade-aware Monte Carlo reproducibility
+- Paired first-order/cascade exposure ordering
+- First-order parity when endogenous price impact is disabled
+- Tail-metric bounds and percentile ordering
+- Market-depth sensitivity under identical stochastic draws
 
-Current test suite:
-
-**23 tests passing**
-
-Pull requests are also validated automatically with GitHub Actions.
+Pull requests are validated automatically with GitHub Actions.
 
 ## Dashboard
 
@@ -262,6 +288,15 @@ A dedicated **Liquidation Cascade Lab** adds controls for:
 
 It visualizes asset-level cascade attribution, endogenous price paths, collateral sold by round, secondary liquidations, and the most vulnerable ending positions.
 
+A separate **Cascade Tail Risk** page compares first-order and cascade-aware exposure distributions over identical Monte Carlo draws. It includes:
+
+- mean first-order versus cascade exposure,
+- amplification probability,
+- P95/P99 tail amplification,
+- bad-debt tails,
+- simulation-level paired comparisons, and
+- optional market-depth sensitivity.
+
 ## Project Structure
 
 ```text
@@ -276,12 +311,14 @@ riskforge/
 ├── data/
 │   └── calibration_snapshot.csv
 ├── pages/
+│   ├── Cascade_Tail_Risk.py
 │   └── Liquidation_Cascade.py
 ├── scripts/
 │   └── save_calibration.py
 ├── src/
 │   ├── __init__.py
 │   ├── calibration.py
+│   ├── cascade_simulation.py
 │   ├── data_generator.py
 │   ├── liquidation_cascade.py
 │   ├── risk_engine.py
@@ -289,6 +326,7 @@ riskforge/
 │   └── stress_engine.py
 └── tests/
     ├── test_calibration.py
+    ├── test_cascade_simulation.py
     ├── test_liquidation_cascade.py
     ├── test_risk_engine.py
     ├── test_simulation.py
