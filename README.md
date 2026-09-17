@@ -1,6 +1,6 @@
 # RiskForge
 
-A quantitative protocol risk and stress-testing engine for simulating market shocks, estimating liquidation exposure, and analyzing systemic risk under uncertainty.
+A quantitative protocol risk and stress-testing engine for simulating market shocks, estimating liquidation exposure, modeling liquidation cascades, and analyzing systemic risk under uncertainty.
 
 ## Why I Built This
 
@@ -10,7 +10,7 @@ That led to a broader question:
 
 > How can we move from evaluating individual lending positions to measuring protocol-level risk under deterministic and stochastic market stress?
 
-RiskForge explores that question through position-level risk modeling, deterministic stress testing, asset-specific scenarios, Monte Carlo simulation, historical market calibration, tail-risk analysis, and parameter sensitivity.
+RiskForge explores that question through position-level risk modeling, deterministic stress testing, asset-specific scenarios, endogenous liquidation-cascade simulation, Monte Carlo simulation, historical market calibration, tail-risk analysis, and parameter sensitivity.
 
 ## Questions I Wanted to Answer
 
@@ -24,13 +24,17 @@ Rather than starting with a dashboard, I built the project around a sequence of 
 
 4. What happens when ETH, BTC, and SOL experience different shocks instead of moving identically?
 
-5. Deterministic scenarios tell us what happens under a chosen crash, but what is the distribution of possible outcomes?
+5. What happens after liquidation starts if seized collateral is sold into finite market depth?
 
-6. How often do severe outcomes occur in the tail of that distribution?
+6. Can those sales create additional price pressure and push previously healthy positions into liquidation?
 
-7. How sensitive are those results to assumptions about liquidation thresholds?
+7. Deterministic scenarios tell us what happens under a chosen crash, but what is the distribution of possible outcomes?
 
-8. How much do simulation results change when volatility and cross-asset correlations are calibrated from historical market data rather than assumed?
+8. How often do severe outcomes occur in the tail of that distribution?
+
+9. How sensitive are those results to assumptions about liquidation thresholds?
+
+10. How much do simulation results change when volatility and cross-asset correlations are calibrated from historical market data rather than assumed?
 
 These questions drove the architecture of RiskForge.
 
@@ -45,6 +49,12 @@ Deterministic Market Stress
 Protocol Liquidation Exposure
 ↓
 Asset-Specific Stress Testing
+↓
+Endogenous Liquidation Cascade
+↓
+Market-Depth Price Impact
+↓
+Secondary Liquidations + Bad Debt
 ↓
 Monte Carlo Market Simulation
 ↓
@@ -103,7 +113,39 @@ This allows scenarios such as:
 
 The resulting exposure can then be decomposed by collateral asset.
 
-### 4. Monte Carlo Risk Simulation
+### 4. Endogenous Liquidation Cascades
+
+First-order stress testing identifies positions that are liquidatable immediately after a market shock. It does not capture the feedback created by liquidation execution itself.
+
+RiskForge therefore includes an iterative liquidation-cascade engine. Each round:
+
+1. identifies positions with health factor below one,
+2. repays debt up to a configurable close factor,
+3. seizes collateral including a configurable liquidation bonus,
+4. treats the seized collateral as sell pressure,
+5. converts that sell pressure into additional price impact using asset-specific market depth,
+6. recalculates every position at the new prices, and
+7. repeats until the cascade stabilizes or the configured round limit is reached.
+
+The price-impact model is deliberately transparent:
+
+```text
+next_price = current_price × exp(-impact_factor × collateral_sold_usd / market_depth_usd)
+```
+
+This makes it possible to separate:
+
+- positions liquidatable from the initial exogenous shock,
+- positions that become liquidatable only because of endogenous liquidation pressure,
+- debt repaid through liquidation,
+- collateral sold by asset and round,
+- additional price impact caused by the cascade,
+- remaining liquidatable positions, and
+- residual bad debt when debt exceeds remaining collateral value.
+
+The cascade module is a stress-testing abstraction, not a prediction of realized exchange execution, MEV behavior, liquidator competition, or protocol-specific transaction ordering.
+
+### 5. Monte Carlo Risk Simulation
 
 Deterministic scenarios answer "what if this happens?"
 
@@ -115,7 +157,7 @@ RiskForge simulates correlated ETH, BTC, and SOL market returns and maps each si
 
 Both Normal and Student-t return models are available so the effect of heavier-tailed return assumptions can be explored.
 
-### 5. Historical Calibration
+### 6. Historical Calibration
 
 Rather than relying exclusively on assumed market parameters, RiskForge can estimate volatility and cross-asset dependence from historical ETH, BTC, and SOL prices.
 
@@ -139,7 +181,7 @@ Estimated return correlations:
 
 The calibrated correlation matrix was also checked for positive semidefiniteness before being used in simulation.
 
-### 6. Tail-Risk Evaluation
+### 7. Tail-Risk Evaluation
 
 Mean exposure alone can hide severe but less frequent outcomes.
 
@@ -154,13 +196,15 @@ RiskForge therefore evaluates:
 
 This makes the shape and tail of the simulated risk distribution visible.
 
-### 7. Parameter Sensitivity
+### 8. Parameter Sensitivity
 
 Risk estimates depend on model and protocol assumptions.
 
 RiskForge therefore performs counterfactual liquidation-threshold sensitivity analysis under a fixed market shock.
 
-This is intended as sensitivity analysis, not parameter optimization or a recommendation for protocol settings.
+The liquidation-cascade lab also exposes market depth, close factor, liquidation bonus, price-impact strength, and maximum cascade rounds so the effect of execution assumptions can be inspected directly.
+
+These are sensitivity analyses, not parameter optimization or recommendations for protocol settings.
 
 ## Validation
 
@@ -180,14 +224,23 @@ The project includes automated tests covering:
 - Correlation symmetry
 - Unit correlation diagonal
 - Non-negative volatility
+- No-cascade behavior for healthy positions
+- Secondary liquidations under shallow market depth
+- Zero endogenous price-impact invariance
+- Cascade reproducibility
+- Non-negative debt, collateral, and bad-debt accounting
+- Debt-repayment reconciliation
+- Cascade input validation
 
 Current test suite:
 
-**17 tests passing**
+**23 tests passing**
+
+Pull requests are also validated automatically with GitHub Actions.
 
 ## Dashboard
 
-The Streamlit dashboard provides interactive access to:
+The Streamlit application provides interactive access to:
 
 - Protocol stress-test ladders
 - Interactive asset-specific shocks
@@ -198,28 +251,66 @@ The Streamlit dashboard provides interactive access to:
 - Tail-risk metrics
 - Liquidation-threshold sensitivity
 
+A dedicated **Liquidation Cascade Lab** adds controls for:
+
+- ETH, BTC, and SOL initial shocks
+- Asset-specific market depth
+- Close factor
+- Liquidation bonus
+- Price-impact strength
+- Maximum cascade rounds
+
+It visualizes asset-level cascade attribution, endogenous price paths, collateral sold by round, secondary liquidations, and the most vulnerable ending positions.
+
 ## Project Structure
 
 ```text
 riskforge/
+├── .github/
+│   └── workflows/
+│       └── ci.yml
 ├── app.py
 ├── README.md
 ├── requirements.txt
 ├── pytest.ini
-├── assets/
 ├── data/
 │   └── calibration_snapshot.csv
+├── pages/
+│   └── Liquidation_Cascade.py
 ├── scripts/
 │   └── save_calibration.py
 ├── src/
 │   ├── __init__.py
 │   ├── calibration.py
 │   ├── data_generator.py
+│   ├── liquidation_cascade.py
 │   ├── risk_engine.py
 │   ├── simulation.py
 │   └── stress_engine.py
 └── tests/
     ├── test_calibration.py
+    ├── test_liquidation_cascade.py
     ├── test_risk_engine.py
     ├── test_simulation.py
     └── test_stress_engine.py
+```
+
+## Running the Project
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Run the test suite:
+
+```bash
+python -m pytest -q
+```
+
+Launch the Streamlit application:
+
+```bash
+streamlit run app.py
+```
