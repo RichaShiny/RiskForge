@@ -10,7 +10,7 @@ That led to a broader question:
 
 > How can we move from evaluating individual lending positions to measuring protocol-level risk under deterministic and stochastic market stress?
 
-RiskForge explores that question through position-level risk modeling, deterministic stress testing, asset-specific scenarios, endogenous liquidation-cascade simulation, cascade-aware Monte Carlo analysis, historical market calibration, tail-risk evaluation, and parameter sensitivity.
+RiskForge explores that question through position-level risk modeling, deterministic stress testing, asset-specific scenarios, endogenous liquidation-cascade simulation, cascade-aware Monte Carlo analysis, reverse stress testing, historical market calibration, tail-risk evaluation, and parameter sensitivity.
 
 ## Questions I Wanted to Answer
 
@@ -34,9 +34,11 @@ Rather than starting with a dashboard, I built the project around a sequence of 
 
 9. How often do severe outcomes occur in the tail of that distribution?
 
-10. How sensitive are those results to assumptions about liquidation thresholds and market depth?
+10. Instead of choosing a crash first, what is the smallest modeled market decline that causes a chosen protocol-risk threshold to fail?
 
-11. How much do simulation results change when volatility and cross-asset correlations are calibrated from historical market data rather than assumed?
+11. How sensitive are those results to assumptions about liquidation thresholds and market depth?
+
+12. How much do simulation results change when volatility and cross-asset correlations are calibrated from historical market data rather than assumed?
 
 These questions drove the architecture of RiskForge.
 
@@ -63,6 +65,8 @@ Correlated Monte Carlo Market Draws
 Paired First-Order vs Cascade-Aware Evaluation
 ↓
 Tail Amplification + Bad-Debt Distribution
+↓
+Reverse Stress Threshold Solver
 ↓
 Historical Volatility + Correlation Calibration
 ↓
@@ -177,7 +181,30 @@ For each simulation it records:
 - endogenous price decline, and
 - residual bad debt.
 
-### 6. Historical Calibration
+### 6. Reverse Stress Testing
+
+Forward stress testing starts with a chosen market move and measures the resulting loss or exposure.
+
+Reverse stress testing starts with a failure threshold and asks:
+
+> What is the smallest modeled market decline that causes this threshold to be breached?
+
+RiskForge solves that problem with a bracketed search and bisection over the same protocol and cascade mechanics used elsewhere in the project. Supported targets include:
+
+- first-order liquidatable debt share,
+- cascade-aware debt exposure,
+- additional exposure created by cascade amplification, and
+- bad-debt share.
+
+Optional asset stress weights allow asymmetric scenarios. For example, a common base decline can be scaled so SOL falls more than ETH while BTC falls less.
+
+For each solved target the engine reports the smallest tested breach, the largest tested safe shock immediately below it, the realized asset-specific shock vector, cascade-created positions, and bad debt at the breach point.
+
+The solver also builds a reverse-stress frontier across multiple risk thresholds. This makes it possible to compare how quickly increasingly severe protocol states are reached under different liquidity and liquidation assumptions.
+
+Reverse-stress thresholds are model-based breakpoints, not forecasts of future market moves or recommendations for protocol parameters.
+
+### 7. Historical Calibration
 
 Rather than relying exclusively on assumed market parameters, RiskForge can estimate volatility and cross-asset dependence from historical ETH, BTC, and SOL prices.
 
@@ -201,7 +228,7 @@ Estimated return correlations:
 
 The calibrated correlation matrix was also checked for positive semidefiniteness before being used in simulation.
 
-### 7. Tail-Risk Evaluation
+### 8. Tail-Risk Evaluation
 
 Mean exposure alone can hide severe but less frequent outcomes.
 
@@ -219,7 +246,7 @@ RiskForge therefore evaluates first-order and cascade-aware tails separately, in
 
 This makes it possible to see not only whether a market draw is severe, but whether liquidation feedback makes the severe tail materially worse under the chosen stress assumptions.
 
-### 8. Parameter Sensitivity
+### 9. Parameter Sensitivity
 
 Risk estimates depend on model and protocol assumptions.
 
@@ -228,6 +255,8 @@ RiskForge therefore performs counterfactual liquidation-threshold sensitivity an
 The liquidation-cascade lab exposes market depth, close factor, liquidation bonus, price-impact strength, and maximum cascade rounds so the effect of execution assumptions can be inspected directly.
 
 The cascade-aware Monte Carlo layer also supports paired market-depth sensitivity. The same simulated market draws are re-evaluated under multiple liquidity-depth multipliers, making it possible to isolate how shallow versus deep markets change cascade amplification and tail risk.
+
+The reverse-stress solver can use the same market-depth and liquidation assumptions, so the critical shock itself can be compared across alternative liquidity regimes.
 
 These are sensitivity analyses, not parameter optimization or recommendations for protocol settings.
 
@@ -261,6 +290,11 @@ The project includes automated tests covering:
 - First-order parity when endogenous price impact is disabled
 - Tail-metric bounds and percentile ordering
 - Market-depth sensitivity under identical stochastic draws
+- Reverse-stress breach and safe-bracket correctness
+- Monotonic critical shocks across increasing risk thresholds
+- First-order/cascade threshold parity when endogenous price impact is disabled
+- Reverse-stress market-depth sensitivity
+- Asset-specific stress-weight behavior
 
 Pull requests are validated automatically with GitHub Actions.
 
@@ -297,6 +331,15 @@ A separate **Cascade Tail Risk** page compares first-order and cascade-aware exp
 - simulation-level paired comparisons, and
 - optional market-depth sensitivity.
 
+The **Reverse Stress Test** page solves for critical shocks instead of requiring a shock to be chosen first. It includes:
+
+- selectable risk targets,
+- asymmetric ETH/BTC/SOL stress weights,
+- configurable market depth and liquidation mechanics,
+- the smallest tested breach and largest tested safe shock,
+- critical asset-level shock vectors, and
+- a reverse-stress frontier across increasing risk thresholds.
+
 ## Project Structure
 
 ```text
@@ -312,7 +355,8 @@ riskforge/
 │   └── calibration_snapshot.csv
 ├── pages/
 │   ├── Cascade_Tail_Risk.py
-│   └── Liquidation_Cascade.py
+│   ├── Liquidation_Cascade.py
+│   └── Reverse_Stress_Test.py
 ├── scripts/
 │   └── save_calibration.py
 ├── src/
@@ -321,6 +365,7 @@ riskforge/
 │   ├── cascade_simulation.py
 │   ├── data_generator.py
 │   ├── liquidation_cascade.py
+│   ├── reverse_stress.py
 │   ├── risk_engine.py
 │   ├── simulation.py
 │   └── stress_engine.py
@@ -328,6 +373,7 @@ riskforge/
     ├── test_calibration.py
     ├── test_cascade_simulation.py
     ├── test_liquidation_cascade.py
+    ├── test_reverse_stress.py
     ├── test_risk_engine.py
     ├── test_simulation.py
     └── test_stress_engine.py
